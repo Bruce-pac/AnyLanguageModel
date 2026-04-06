@@ -326,77 +326,89 @@ public struct LoopingAnthropicLanguageModel: LanguageModel {
         }
 
         let responseSchema = type == String.self ? nil : try convertSchemaToAnthropicFormat(Content.generationSchema)
-        let params = try createMessageParams(
-            model: model,
-            system: nil,
-            messages: session.transcript.toAnthropicMessages(),
-            tools: anthropicTools.isEmpty ? nil : anthropicTools,
-            responseSchema: responseSchema,
-            options: options
-        )
-
-        let body = try JSONEncoder().encode(params)
-
-        let message: AnthropicMessageResponse = try await httpSession.fetch(
-            .post,
-            url: url,
-            headers: headers,
-            body: body
-        )
-
+        var transcript = session.transcript
         var entries: [Transcript.Entry] = []
 
-        // Handle tool calls, if present
-        let toolUses: [AnthropicToolUse] = message.content.compactMap { block in
-            if case .toolUse(let u) = block { return u }
-            return nil
-        }
+        // Multi-turn loop: model -> tool_use -> tool_result -> model ... until final assistant text.
+        while true {
+            let params = try createMessageParams(
+                model: model,
+                system: nil,
+                messages: transcript.toAnthropicMessages(),
+                tools: anthropicTools.isEmpty ? nil : anthropicTools,
+                responseSchema: responseSchema,
+                options: options
+            )
 
-        if !toolUses.isEmpty {
-            let resolution = try await resolveToolUses(toolUses, session: session)
-            switch resolution {
-            case .stop(let calls):
-                if !calls.isEmpty {
-                    entries.append(.toolCalls(Transcript.ToolCalls(calls)))
+            let body = try JSONEncoder().encode(params)
+
+            let message: AnthropicMessageResponse = try await httpSession.fetch(
+                .post,
+                url: url,
+                headers: headers,
+                body: body
+            )
+
+            // Handle tool calls, if present
+            let toolUses: [AnthropicToolUse] = message.content.compactMap { block in
+                if case .toolUse(let u) = block { return u }
+                return nil
+            }
+
+            if !toolUses.isEmpty {
+                let resolution = try await resolveToolUses(toolUses, session: session)
+                switch resolution {
+                case .stop(let calls):
+                    if !calls.isEmpty {
+                        let toolCallEntry = Transcript.Entry.toolCalls(Transcript.ToolCalls(calls))
+                        entries.append(toolCallEntry)
+                        transcript.append(toolCallEntry)
+                    }
+                    let empty = try emptyResponseContent(for: type)
+                    return LanguageModelSession.Response(
+                        content: empty.content,
+                        rawContent: empty.rawContent,
+                        transcriptEntries: ArraySlice(entries)
+                    )
+                case .invocations(let invocations):
+                    if !invocations.isEmpty {
+                        let toolCallEntry = Transcript.Entry.toolCalls(Transcript.ToolCalls(invocations.map(\.call)))
+                        entries.append(toolCallEntry)
+                        transcript.append(toolCallEntry)
+
+                        for invocation in invocations {
+                            let toolOutputEntry = Transcript.Entry.toolOutput(invocation.output)
+                            entries.append(toolOutputEntry)
+                            transcript.append(toolOutputEntry)
+                        }
+                    }
+                    continue
                 }
-                let empty = try emptyResponseContent(for: type)
+            }
+
+            let text = message.content.compactMap { block -> String? in
+                switch block {
+                case .text(let t): return t.text
+                default: return nil
+                }
+            }.joined()
+
+            if type == String.self {
                 return LanguageModelSession.Response(
-                    content: empty.content,
-                    rawContent: empty.rawContent,
+                    content: text as! Content,
+                    rawContent: GeneratedContent(text),
                     transcriptEntries: ArraySlice(entries)
                 )
-            case .invocations(let invocations):
-                if !invocations.isEmpty {
-                    entries.append(.toolCalls(Transcript.ToolCalls(invocations.map(\.call))))
-                    for invocation in invocations {
-                        entries.append(.toolOutput(invocation.output))
-                    }
-                }
             }
-        }
 
-        let text = message.content.compactMap { block -> String? in
-            switch block {
-            case .text(let t): return t.text
-            default: return nil
-            }
-        }.joined()
-
-        if type == String.self {
+            let rawContent = try GeneratedContent(json: text)
+            let content = try Content(rawContent)
             return LanguageModelSession.Response(
-                content: text as! Content,
-                rawContent: GeneratedContent(text),
+                content: content,
+                rawContent: rawContent,
                 transcriptEntries: ArraySlice(entries)
             )
         }
-
-        let rawContent = try GeneratedContent(json: text)
-        let content = try Content(rawContent)
-        return LanguageModelSession.Response(
-            content: content,
-            rawContent: rawContent,
-            transcriptEntries: ArraySlice(entries)
-        )
     }
 
     public func streamResponse<Content>(
@@ -543,7 +555,7 @@ private func createMessageParams(
     }
 
     // Apply Anthropic-specific custom options
-    if let customOptions = options[custom: AnthropicLanguageModel.self] {
+    if let customOptions = options[custom: LoopingAnthropicLanguageModel.self] {
         if let topP = customOptions.topP {
             params["top_p"] = .double(topP)
         }
@@ -861,6 +873,7 @@ private struct AnthropicMessage: Codable, Sendable {
 
 private enum AnthropicContent: Codable, Sendable {
     case text(AnthropicText)
+    case thinking(AnthropicThinking)
     case image(AnthropicImage)
     case toolUse(AnthropicToolUse)
     case toolResult(AnthropicToolResult)
@@ -868,7 +881,11 @@ private enum AnthropicContent: Codable, Sendable {
     enum CodingKeys: String, CodingKey { case type }
 
     enum ContentType: String, Codable {
-        case text = "text", image = "image", toolUse = "tool_use", toolResult = "tool_result"
+        case text = "text"
+        case thinking = "thinking"
+        case image = "image"
+        case toolUse = "tool_use"
+        case toolResult = "tool_result"
     }
 
     init(from decoder: any Decoder) throws {
@@ -877,6 +894,8 @@ private enum AnthropicContent: Codable, Sendable {
         switch type {
         case .text:
             self = .text(try AnthropicText(from: decoder))
+        case .thinking:
+            self = .thinking(try AnthropicThinking(from: decoder))
         case .image:
             self = .image(try AnthropicImage(from: decoder))
         case .toolUse:
@@ -889,6 +908,7 @@ private enum AnthropicContent: Codable, Sendable {
     func encode(to encoder: any Encoder) throws {
         switch self {
         case .text(let t): try t.encode(to: encoder)
+        case .thinking(let t): try t.encode(to: encoder)
         case .image(let i): try i.encode(to: encoder)
         case .toolUse(let u): try u.encode(to: encoder)
         case .toolResult(let r): try r.encode(to: encoder)
@@ -903,6 +923,18 @@ private struct AnthropicText: Codable, Sendable {
     init(text: String) {
         self.type = "text"
         self.text = text
+    }
+}
+
+private struct AnthropicThinking: Codable, Sendable {
+    let type: String
+    let thinking: String
+    let signature: String?
+
+    init(thinking: String, signature: String? = nil) {
+        self.type = "thinking"
+        self.thinking = thinking
+        self.signature = signature
     }
 }
 
