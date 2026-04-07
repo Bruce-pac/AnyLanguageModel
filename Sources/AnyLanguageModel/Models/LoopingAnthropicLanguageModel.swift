@@ -652,7 +652,7 @@ private func partialSnapshot<Content: Generable>(
 }
 
 private func convertSchemaToAnthropicFormat(_ schema: GenerationSchema) throws -> JSONSchema {
-    let resolvedSchema = schema.withResolvedRoot() ?? schema
+    let resolvedSchema = try schema.inlined()
     let data = try JSONEncoder().encode(resolvedSchema)
     return try JSONDecoder().decode(JSONSchema.self, from: data)
 }

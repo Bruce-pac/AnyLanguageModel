@@ -446,7 +446,7 @@ public struct GenerationSchema: Equatable, Codable, CustomDebugStringConvertible
         self.defs = allDefs
     }
 
-    private init(root: Node, defs: [String: Node]) {
+    init(root: Node, defs: [String: Node]) {
         self.root = root
         self.defs = defs
     }
@@ -460,6 +460,59 @@ public struct GenerationSchema: Equatable, Codable, CustomDebugStringConvertible
             let defNode = defs[refName]
         {
             return GenerationSchema(root: defNode, defs: defs)
+        }
+        return nil
+    }
+
+    func inlined() throws -> GenerationSchema {
+        guard !defs.isEmpty else { return self }
+        let rootNode = try inlineNode(root, visited: [])
+        return GenerationSchema(root: rootNode, defs: [:])
+    }
+
+    private func inlineNode(_ node: Node, visited: Set<String>) throws -> Node {
+        switch node {
+        case .ref(let name):
+            guard !visited.contains(name) else {
+                throw SchemaError.circularReferences(
+                    schema: schemaName,
+                    references: [name],
+                    context: SchemaError.Context(debugDescription: "Circular reference while inlining schema")
+                )
+            }
+            guard let referencedNode = defs[name] else {
+                throw SchemaError.undefinedReferences(
+                    schema: schemaName,
+                    references: [name],
+                    context: SchemaError.Context(debugDescription: "Undefined reference while inlining schema")
+                )
+            }
+
+            var nextVisited = visited
+            nextVisited.insert(name)
+            return try inlineNode(referencedNode, visited: nextVisited)
+
+        case .object(var object):
+            for (key, value) in object.properties {
+                object.properties[key] = try inlineNode(value, visited: visited)
+            }
+            return .object(object)
+
+        case .array(var array):
+            array.items = try inlineNode(array.items, visited: visited)
+            return .array(array)
+
+        case .anyOf(let nodes):
+            return try .anyOf(nodes.map { try inlineNode($0, visited: visited) })
+
+        case .string, .number, .boolean:
+            return node
+        }
+    }
+
+    private var schemaName: String? {
+        if case .ref(let name) = root {
+            return name
         }
         return nil
     }
@@ -824,6 +877,9 @@ extension GenerationSchema {
         /// and one of those schemas references an undefined schema.
         case undefinedReferences(schema: String?, references: [String], context: Context)
 
+        /// An error that represents an attempt to inline a schema containing circular references.
+        case circularReferences(schema: String?, references: [String], context: Context)
+
         /// A string representation of the error description.
         public var errorDescription: String? {
             switch self {
@@ -835,6 +891,8 @@ extension GenerationSchema {
                 return "Empty type choices in schema '\(schema)'"
             case .undefinedReferences(let schema, let references, _):
                 return "Undefined references \(references) in schema '\(schema ?? "root")'"
+            case .circularReferences(let schema, let references, _):
+                return "Circular references \(references) in schema '\(schema ?? "root")'"
             }
         }
 
@@ -849,6 +907,8 @@ extension GenerationSchema {
                 return "Provide at least one type choice"
             case .undefinedReferences:
                 return "Ensure all referenced schemas are defined"
+            case .circularReferences:
+                return "Break circular schema references before inlining"
             }
         }
     }

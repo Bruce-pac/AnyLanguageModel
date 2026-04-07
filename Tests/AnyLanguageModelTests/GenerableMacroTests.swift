@@ -1,6 +1,6 @@
 import Testing
-import AnyLanguageModel
 import Foundation
+@testable import AnyLanguageModel
 
 @Generable
 private struct TestStructWithMultilineDescription {
@@ -44,6 +44,24 @@ private struct ArrayItem {
 private struct ArrayContainer {
     @Guide(description: "Items", .count(2))
     var items: [ArrayItem]
+}
+
+@Generable
+private struct NestedTodoArguments {
+    @Guide(description: "The complete list of tasks.")
+    var items: [Item]
+
+    @Generable
+    struct Item {
+        @Guide(description: "A unique identifier for the task.")
+        var taskID: String
+
+        @Guide(description: "The task description.")
+        var text: String
+
+        @Guide(description: "The task status.", .anyOf(["pending", "in_progress", "completed"]))
+        var status: String
+    }
 }
 
 @Generable
@@ -253,6 +271,43 @@ struct GenerableMacroTests {
         let partial = container.asPartiallyGenerated()
         #expect(partial.items?.count == 2)
         #expect(partial.items?.first?.name == "Alpha")
+    }
+
+    @Test("Array schemas preserve element defs")
+    func arraySchemasPreserveElementDefs() {
+        let schema = NestedTodoArguments.generationSchema
+
+        guard case .ref(let rootName) = schema.root else {
+            Issue.record("Expected NestedTodoArguments schema root to be a ref")
+            return
+        }
+        guard case .object(let rootObject)? = schema.defs[rootName] else {
+            Issue.record("Expected NestedTodoArguments root definition")
+            return
+        }
+        guard case .array(let itemsNode)? = rootObject.properties["items"] else {
+            Issue.record("Expected items to be an array property")
+            return
+        }
+        guard case .ref(let itemRef) = itemsNode.items else {
+            Issue.record("Expected items array to reference nested item type")
+            return
+        }
+
+        #expect(schema.defs[itemRef] != nil)
+    }
+
+    @Test("Inlining expands nested array refs")
+    func inliningExpandsNestedArrayRefs() throws {
+        let schema = try NestedTodoArguments.generationSchema.inlined()
+        let data = try JSONEncoder().encode(schema)
+        let json = String(decoding: data, as: UTF8.self)
+
+        #expect(!json.contains(#""$ref""#))
+        #expect(!json.contains(#""$defs""#))
+        #expect(json.contains(#""taskID""#))
+        #expect(json.contains(#""text""#))
+        #expect(json.contains(#""status""#))
     }
 
     @Test("Primitive properties use concrete partial types")

@@ -109,4 +109,15 @@ struct DynamicGenerationSchemaTests {
             _ = try GenerationSchema(root: root, dependencies: [])
         }
     }
+
+    @Test func circularReferenceInlineThrows() {
+        let schema = GenerationSchema(
+            root: .ref("Loop"),
+            defs: ["Loop": .ref("Loop")]
+        )
+
+        #expect(throws: GenerationSchema.SchemaError.self) {
+            _ = try schema.inlined()
+        }
+    }
 }

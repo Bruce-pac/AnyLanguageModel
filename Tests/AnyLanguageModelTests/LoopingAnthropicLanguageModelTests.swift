@@ -5,6 +5,33 @@ import Testing
 
 @Suite("LoopingAnthropicLanguageModel", .serialized)
 struct LoopingAnthropicLanguageModelTests {
+    struct NestedTodoTool: Tool {
+        let name = "todo"
+        let description = "Replace the full todo list for planning."
+
+        @Generable
+        struct Arguments {
+            @Guide(description: "The complete list of tasks.")
+            var items: [Item]
+
+            @Generable
+            struct Item {
+                @Guide(description: "A unique identifier for the task.")
+                var taskID: String
+
+                @Guide(description: "The task description.")
+                var text: String
+
+                @Guide(description: "The task status.", .anyOf(["pending", "in_progress", "completed"]))
+                var status: String
+            }
+        }
+
+        func call(arguments: Arguments) async throws -> String {
+            "\(arguments.items.count)"
+        }
+    }
+
     @Test func appliesCustomOptionsFromLoopingModelType() async throws {
         let transport = MockAnthropicTransport()
         transport.enqueueJSON(
@@ -236,6 +263,42 @@ struct LoopingAnthropicLanguageModelTests {
 
         let toolResultCount = secondBody.components(separatedBy: "\"tool_result\"").count - 1
         #expect(toolResultCount == 2)
+    }
+
+    @Test func inlinesNestedToolArgumentSchemaInFirstRequest() async throws {
+        let transport = MockAnthropicTransport()
+        transport.enqueueJSON(
+            """
+            {
+              "id": "msg_1",
+              "type": "message",
+              "role": "assistant",
+              "content": [{ "type": "text", "text": "ok" }],
+              "model": "claude-test",
+              "stop_reason": "end_turn"
+            }
+            """
+        )
+
+        let model = LoopingAnthropicLanguageModel(
+            apiKey: "test-api-key",
+            model: "claude-test",
+            session: transport.session
+        )
+
+        let lmSession = LanguageModelSession(model: model, tools: [NestedTodoTool()])
+        _ = try await lmSession.respond(to: "Plan the work")
+
+        let firstRequest = try #require(transport.requests.first)
+        let bodyData = try #require(firstRequest.httpBody)
+        let body = String(decoding: bodyData, as: UTF8.self)
+
+        #expect(body.contains(#""input_schema""#))
+        #expect(!body.contains(#""$ref""#))
+        #expect(!body.contains(#""$defs""#))
+        #expect(body.contains(#""taskID""#))
+        #expect(body.contains(#""text""#))
+        #expect(body.contains(#""status""#))
     }
 }
 
