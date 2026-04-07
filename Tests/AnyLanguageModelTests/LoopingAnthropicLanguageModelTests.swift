@@ -155,10 +155,25 @@ struct LoopingAnthropicLanguageModelTests {
         let secondRequest = try #require(transport.requests.count > 1 ? transport.requests[1] : nil)
         let secondBodyJSONData = try #require(secondRequest.httpBody)
         let secondBody = String(decoding: secondBodyJSONData, as: UTF8.self)
+        let secondBodyObject = try #require(try transport.requestBodyJSONObject(at: 1))
+        let messages = try #require(secondBodyObject["messages"] as? [[String: Any]])
+        let assistantToolUseMessage = try #require(
+            messages.first {
+                ($0["role"] as? String) == "assistant"
+                    && (($0["content"] as? [[String: Any]])?.contains { ($0["type"] as? String) == "tool_use" } == true)
+            }
+        )
+        let contentBlocks = try #require(assistantToolUseMessage["content"] as? [[String: Any]])
+        let toolUseBlock = try #require(contentBlocks.first { ($0["type"] as? String) == "tool_use" })
+        let input = try #require(toolUseBlock["input"] as? [String: Any])
 
         #expect(secondBody.contains("tool_result"))
         #expect(secondBody.contains("toolu_weather_1"))
         #expect(secondBody.contains("sunny"))
+        #expect(input["city"] as? String == "San Francisco")
+        #expect(input["kind"] == nil)
+        #expect(input["properties"] == nil)
+        #expect(input["orderedKeys"] == nil)
     }
 
     @Test func supportsMultipleToolCallsInOneRound() async throws {

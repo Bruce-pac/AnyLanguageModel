@@ -776,7 +776,8 @@ private func toGeneratedContent(_ value: [String: JSONValue]?) throws -> Generat
 }
 
 private func fromGeneratedContent(_ content: GeneratedContent) throws -> [String: JSONValue] {
-    let data = try JSONEncoder().encode(content)
+    let jsonObject = try content.toJSONValue()
+    let data = try JSONSerialization.data(withJSONObject: jsonObject, options: [.fragmentsAllowed])
     let jsonValue = try JSONDecoder().decode(JSONValue.self, from: data)
 
     guard case .object(let dict) = jsonValue else {

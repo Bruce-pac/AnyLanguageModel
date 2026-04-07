@@ -245,7 +245,7 @@ public struct GeneratedContent: Sendable, Equatable, Generable, CustomDebugStrin
         }
     }
 
-    private func toJSONValue() throws -> Any {
+    internal func toJSONValue() throws -> Any {
         switch kind {
         case .null:
             return NSNull()
