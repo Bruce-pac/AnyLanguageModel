@@ -133,6 +133,92 @@ struct LoopingAnthropicLanguageModelTests {
         #expect(transport.requests.count == 2)
     }
 
+    @Test func preservesAssistantTextBeforeToolUseInTranscriptAndFollowupRequest() async throws {
+        let transport = MockAnthropicTransport()
+        transport.enqueueJSON(
+            """
+            {
+              "id": "msg_1",
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Let me check the files."
+                },
+                {
+                  "type": "tool_use",
+                  "id": "toolu_weather_1",
+                  "name": "getWeather",
+                  "input": { "city": "San Francisco" }
+                }
+              ],
+              "model": "claude-test",
+              "stop_reason": "tool_use"
+            }
+            """
+        )
+        transport.enqueueJSON(
+            """
+            {
+              "id": "msg_2",
+              "type": "message",
+              "role": "assistant",
+              "content": [{ "type": "text", "text": "It is sunny in San Francisco." }],
+              "model": "claude-test",
+              "stop_reason": "end_turn"
+            }
+            """
+        )
+
+        let model = LoopingAnthropicLanguageModel(
+            apiKey: "test-api-key",
+            model: "claude-test",
+            session: transport.session
+        )
+
+        let lmSession = LanguageModelSession(model: model, tools: [WeatherTool()])
+        let response = try await lmSession.respond(to: "What's the weather?")
+
+        let entries = Array(response.transcriptEntries)
+        #expect(entries.count == 3)
+
+        if case .response(let assistantResponse) = try #require(entries.first) {
+            let text = assistantResponse.segments.compactMap { segment -> String? in
+                guard case .text(let value) = segment else { return nil }
+                return value.content
+            }.joined()
+            #expect(text == "Let me check the files.")
+        } else {
+            Issue.record("Expected first transcript entry to be the assistant response.")
+        }
+
+        if case .toolCalls(let toolCalls) = try #require(entries.dropFirst().first) {
+            #expect(Array(toolCalls).count == 1)
+        } else {
+            Issue.record("Expected second transcript entry to be tool calls.")
+        }
+
+        if case .toolOutput = try #require(entries.dropFirst(2).first) {
+        } else {
+            Issue.record("Expected third transcript entry to be tool output.")
+        }
+
+        let secondBody = try #require(try transport.requestBodyJSONObject(at: 1))
+        let messages = try #require(secondBody["messages"] as? [[String: Any]])
+        let assistantMessage = try #require(
+            messages.first {
+                ($0["role"] as? String) == "assistant"
+                    && (($0["content"] as? [[String: Any]])?.contains { ($0["type"] as? String) == "text" } == true)
+                    && (($0["content"] as? [[String: Any]])?.contains { ($0["type"] as? String) == "tool_use" } == true)
+            }
+        )
+        let contentBlocks = try #require(assistantMessage["content"] as? [[String: Any]])
+        #expect(contentBlocks.count == 2)
+        #expect(contentBlocks[0]["type"] as? String == "text")
+        #expect(contentBlocks[1]["type"] as? String == "tool_use")
+    }
+
     @Test func loopsToolUseUntilFinalAssistantResponse() async throws {
         let transport = MockAnthropicTransport()
         transport.enqueueJSON(
