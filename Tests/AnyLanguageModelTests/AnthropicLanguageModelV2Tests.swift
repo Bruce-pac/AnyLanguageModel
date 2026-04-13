@@ -482,6 +482,111 @@ struct AnthropicLanguageModelV2Tests {
         #expect(userContent[1]["type"] as? String == "tool_result")
         #expect(userContent[1]["tool_use_id"] as? String == "toolu_2")
     }
+
+    @Test func flushesToolResultsBeforeNextAssistantToolUse() async throws {
+        let transport = MockAnthropicV2Transport()
+        transport.enqueueJSON(
+            """
+            {
+              "id": "msg_3",
+              "type": "message",
+              "role": "assistant",
+              "content": [{ "type": "text", "text": "done" }],
+              "model": "claude-test",
+              "stop_reason": "end_turn"
+            }
+            """
+        )
+
+        let model = AnthropicLanguageModelV2(
+            apiKey: "test-api-key",
+            model: "claude-test",
+            session: transport.session
+        )
+
+        let transcript = Transcript(entries: [
+            .prompt(
+                Transcript.Prompt(
+                    segments: [.text(.init(content: "Read the file requirements.txt"))]
+                )
+            ),
+            .toolCalls(
+                Transcript.ToolCalls([
+                    Transcript.ToolCall(
+                        id: "functions.read_file:0",
+                        toolName: "read_file",
+                        arguments: GeneratedContent(properties: ["path": "requirements.txt"])
+                    )
+                ])
+            ),
+            .toolOutput(
+                Transcript.ToolOutput(
+                    id: "functions.read_file:0",
+                    toolName: "read_file",
+                    segments: [.text(.init(content: "\"Error: no such file\""))]
+                )
+            ),
+            .toolCalls(
+                Transcript.ToolCalls([
+                    Transcript.ToolCall(
+                        id: "functions.bash:1",
+                        toolName: "bash",
+                        arguments: GeneratedContent(properties: ["command": "ls -la"])
+                    )
+                ])
+            ),
+            .toolOutput(
+                Transcript.ToolOutput(
+                    id: "functions.bash:1",
+                    toolName: "bash",
+                    segments: [.text(.init(content: "\"total 64\""))]
+                )
+            ),
+        ])
+
+        _ = try await model.step(
+            transcript: transcript,
+            tools: [],
+            instructions: nil,
+            generating: String.self,
+            includeSchemaInPrompt: true,
+            options: GenerationOptions()
+        )
+
+        let payload = try requestPayload(from: transport)
+        let messages = try #require(payload["messages"] as? [[String: Any]])
+        #expect(messages.count == 5)
+
+        #expect(messages[0]["role"] as? String == "user")
+        let firstUserContent = try #require(messages[0]["content"] as? [[String: Any]])
+        #expect(firstUserContent.count == 1)
+        #expect(firstUserContent[0]["type"] as? String == "text")
+        #expect(firstUserContent[0]["text"] as? String == "Read the file requirements.txt")
+
+        #expect(messages[1]["role"] as? String == "assistant")
+        let firstAssistantContent = try #require(messages[1]["content"] as? [[String: Any]])
+        #expect(firstAssistantContent.count == 1)
+        #expect(firstAssistantContent[0]["type"] as? String == "tool_use")
+        #expect(firstAssistantContent[0]["id"] as? String == "functions.read_file:0")
+
+        #expect(messages[2]["role"] as? String == "user")
+        let secondUserContent = try #require(messages[2]["content"] as? [[String: Any]])
+        #expect(secondUserContent.count == 1)
+        #expect(secondUserContent[0]["type"] as? String == "tool_result")
+        #expect(secondUserContent[0]["tool_use_id"] as? String == "functions.read_file:0")
+
+        #expect(messages[3]["role"] as? String == "assistant")
+        let secondAssistantContent = try #require(messages[3]["content"] as? [[String: Any]])
+        #expect(secondAssistantContent.count == 1)
+        #expect(secondAssistantContent[0]["type"] as? String == "tool_use")
+        #expect(secondAssistantContent[0]["id"] as? String == "functions.bash:1")
+
+        #expect(messages[4]["role"] as? String == "user")
+        let finalUserContent = try #require(messages[4]["content"] as? [[String: Any]])
+        #expect(finalUserContent.count == 1)
+        #expect(finalUserContent[0]["type"] as? String == "tool_result")
+        #expect(finalUserContent[0]["tool_use_id"] as? String == "functions.bash:1")
+    }
 }
 
 private func promptOnlyTranscript(_ prompt: String) -> Transcript {

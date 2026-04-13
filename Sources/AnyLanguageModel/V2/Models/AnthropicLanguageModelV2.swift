@@ -355,8 +355,10 @@ private func anthropicMessages(from transcript: Transcript) -> [AnthropicMessage
                 )
             )
         case .response(let response):
+            flushUserToolResults()
             pendingAssistantContent.append(contentsOf: convertSegmentsToAnthropicContent(response.segments))
         case .toolCalls(let toolCalls):
+            flushUserToolResults()
             let toolUseBlocks: [AnthropicContent] = toolCalls.map { call in
                 let input = try? fromGeneratedContent(call.arguments)
                 return .toolUse(
