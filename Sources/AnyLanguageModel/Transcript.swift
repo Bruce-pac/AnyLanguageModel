@@ -13,12 +13,12 @@ public struct Transcript: Sendable, Equatable, Codable {
     }
 
     /// Appends a single entry to the transcript.
-    mutating func append(_ entry: Entry) {
+    public mutating func append(_ entry: Entry) {
         entries.append(entry)
     }
 
     /// Appends multiple entries to the transcript.
-    mutating func append<S>(contentsOf newEntries: S) where S: Sequence, S.Element == Entry {
+    public mutating func append<S>(contentsOf newEntries: S) where S: Sequence, S.Element == Entry {
         entries.append(contentsOf: newEntries)
     }
 

@@ -149,6 +149,18 @@ public struct GenerationOptions: Sendable, Equatable, Codable {
         }
     }
 
+    /// Accesses model-specific custom generation options for a V2 language model.
+    public subscript<Model: LanguageModelV2>(
+        custom modelType: Model.Type
+    ) -> Model.CustomGenerationOptions? {
+        get {
+            customOptionsStorage[Model.self]
+        }
+        set {
+            customOptionsStorage[Model.self] = newValue
+        }
+    }
+
     /// Creates generation options that control token sampling behavior.
     ///
     /// - Parameters:
@@ -196,6 +208,22 @@ private struct CustomOptionsStorage: Sendable, Equatable, Codable {
     init() {}
 
     subscript<Model: LanguageModel>(modelType: Model.Type) -> Model.CustomGenerationOptions? {
+        get {
+            guard let wrapper = storage[ObjectIdentifier(modelType)] else {
+                return nil
+            }
+            return wrapper.value as? Model.CustomGenerationOptions
+        }
+        set {
+            if let newValue {
+                storage[ObjectIdentifier(modelType)] = AnyCustomOptions(newValue)
+            } else {
+                storage.removeValue(forKey: ObjectIdentifier(modelType))
+            }
+        }
+    }
+
+    subscript<Model: LanguageModelV2>(modelType: Model.Type) -> Model.CustomGenerationOptions? {
         get {
             guard let wrapper = storage[ObjectIdentifier(modelType)] else {
                 return nil
