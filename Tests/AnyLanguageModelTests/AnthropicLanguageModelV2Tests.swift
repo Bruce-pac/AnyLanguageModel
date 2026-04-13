@@ -223,6 +223,265 @@ struct AnthropicLanguageModelV2Tests {
         )
         #expect(refusalStep.finishReason == .refusal)
     }
+
+    @Test func sendsInstructionsAsTopLevelSystemPrompt() async throws {
+        let transport = MockAnthropicV2Transport()
+        transport.enqueueJSON(
+            """
+            {
+              "id": "msg_1",
+              "type": "message",
+              "role": "assistant",
+              "content": [{ "type": "text", "text": "ok" }],
+              "model": "claude-test",
+              "stop_reason": "end_turn"
+            }
+            """
+        )
+
+        let model = AnthropicLanguageModelV2(
+            apiKey: "test-api-key",
+            model: "claude-test",
+            session: transport.session
+        )
+
+        _ = try await model.step(
+            transcript: promptOnlyTranscript("say hi"),
+            tools: [],
+            instructions: .init(
+                segments: [.text(.init(content: "You are a careful coding agent."))],
+                toolDefinitions: []
+            ),
+            generating: String.self,
+            includeSchemaInPrompt: true,
+            options: GenerationOptions()
+        )
+
+        let payload = try requestPayload(from: transport)
+        #expect(payload["system"] as? String == "You are a careful coding agent.")
+
+        let messages = try #require(payload["messages"] as? [[String: Any]])
+        #expect(messages.count == 1)
+        #expect(messages[0]["role"] as? String == "user")
+
+        let content = try #require(messages[0]["content"] as? [[String: Any]])
+        #expect(content.count == 1)
+        #expect(content[0]["type"] as? String == "text")
+        #expect(content[0]["text"] as? String == "say hi")
+    }
+
+    @Test func separatesMultipleInstructionSegmentsInSystemPrompt() async throws {
+        let transport = MockAnthropicV2Transport()
+        transport.enqueueJSON(
+            """
+            {
+              "id": "msg_1",
+              "type": "message",
+              "role": "assistant",
+              "content": [{ "type": "text", "text": "ok" }],
+              "model": "claude-test",
+              "stop_reason": "end_turn"
+            }
+            """
+        )
+
+        let model = AnthropicLanguageModelV2(
+            apiKey: "test-api-key",
+            model: "claude-test",
+            session: transport.session
+        )
+
+        _ = try await model.step(
+            transcript: promptOnlyTranscript("say hi"),
+            tools: [],
+            instructions: .init(
+                segments: [
+                    .text(.init(content: "First instruction.")),
+                    .text(.init(content: "Second instruction.")),
+                ],
+                toolDefinitions: []
+            ),
+            generating: String.self,
+            includeSchemaInPrompt: true,
+            options: GenerationOptions()
+        )
+
+        let payload = try requestPayload(from: transport)
+        #expect(payload["system"] as? String == "First instruction.\n\nSecond instruction.")
+    }
+
+    @Test func preservesAssistantTextAndToolUseInSingleAssistantMessageWhenEncodingTranscript() async throws {
+        let transport = MockAnthropicV2Transport()
+        transport.enqueueJSON(
+            """
+            {
+              "id": "msg_2",
+              "type": "message",
+              "role": "assistant",
+              "content": [{ "type": "text", "text": "done" }],
+              "model": "claude-test",
+              "stop_reason": "end_turn"
+            }
+            """
+        )
+
+        let model = AnthropicLanguageModelV2(
+            apiKey: "test-api-key",
+            model: "claude-test",
+            session: transport.session
+        )
+
+        let transcript = Transcript(entries: [
+            .response(
+                Transcript.Response(
+                    assetIDs: [],
+                    segments: [.text(.init(content: "Let me check."))]
+                )
+            ),
+            .toolCalls(
+                Transcript.ToolCalls([
+                    Transcript.ToolCall(
+                        id: "toolu_1",
+                        toolName: "getWeather",
+                        arguments: GeneratedContent(properties: ["city": "San Francisco"])
+                    )
+                ])
+            ),
+            .toolOutput(
+                Transcript.ToolOutput(
+                    id: "toolu_1",
+                    toolName: "getWeather",
+                    segments: [.text(.init(content: "Sunny"))]
+                )
+            ),
+            .prompt(
+                Transcript.Prompt(
+                    segments: [.text(.init(content: "Now summarize."))]
+                )
+            ),
+        ])
+
+        _ = try await model.step(
+            transcript: transcript,
+            tools: [WeatherTool()],
+            instructions: .init(
+                segments: [.text(.init(content: "You are a careful coding agent."))],
+                toolDefinitions: []
+            ),
+            generating: String.self,
+            includeSchemaInPrompt: true,
+            options: GenerationOptions()
+        )
+
+        let payload = try requestPayload(from: transport)
+        #expect(payload["system"] as? String == "You are a careful coding agent.")
+
+        let messages = try #require(payload["messages"] as? [[String: Any]])
+        #expect(messages.count == 3)
+
+        #expect(messages[0]["role"] as? String == "assistant")
+        let assistantContent = try #require(messages[0]["content"] as? [[String: Any]])
+        #expect(assistantContent.count == 2)
+        #expect(assistantContent[0]["type"] as? String == "text")
+        #expect(assistantContent[0]["text"] as? String == "Let me check.")
+        #expect(assistantContent[1]["type"] as? String == "tool_use")
+        #expect(assistantContent[1]["id"] as? String == "toolu_1")
+        #expect(assistantContent[1]["name"] as? String == "getWeather")
+
+        #expect(messages[1]["role"] as? String == "user")
+        let toolResultContent = try #require(messages[1]["content"] as? [[String: Any]])
+        #expect(toolResultContent.count == 1)
+        #expect(toolResultContent[0]["type"] as? String == "tool_result")
+        #expect(toolResultContent[0]["tool_use_id"] as? String == "toolu_1")
+
+        #expect(messages[2]["role"] as? String == "user")
+        let promptContent = try #require(messages[2]["content"] as? [[String: Any]])
+        #expect(promptContent.count == 1)
+        #expect(promptContent[0]["type"] as? String == "text")
+        #expect(promptContent[0]["text"] as? String == "Now summarize.")
+    }
+
+    @Test func coalescesMultipleToolResultsIntoSingleUserMessage() async throws {
+        let transport = MockAnthropicV2Transport()
+        transport.enqueueJSON(
+            """
+            {
+              "id": "msg_2",
+              "type": "message",
+              "role": "assistant",
+              "content": [{ "type": "text", "text": "done" }],
+              "model": "claude-test",
+              "stop_reason": "end_turn"
+            }
+            """
+        )
+
+        let model = AnthropicLanguageModelV2(
+            apiKey: "test-api-key",
+            model: "claude-test",
+            session: transport.session
+        )
+
+        let transcript = Transcript(entries: [
+            .response(
+                Transcript.Response(
+                    assetIDs: [],
+                    segments: [.text(.init(content: "Checking both files."))]
+                )
+            ),
+            .toolCalls(
+                Transcript.ToolCalls([
+                    Transcript.ToolCall(
+                        id: "toolu_1",
+                        toolName: "read_file",
+                        arguments: GeneratedContent(properties: ["path": "a.txt"])
+                    ),
+                    Transcript.ToolCall(
+                        id: "toolu_2",
+                        toolName: "read_file",
+                        arguments: GeneratedContent(properties: ["path": "b.txt"])
+                    ),
+                ])
+            ),
+            .toolOutput(
+                Transcript.ToolOutput(
+                    id: "toolu_1",
+                    toolName: "read_file",
+                    segments: [.text(.init(content: "A"))]
+                )
+            ),
+            .toolOutput(
+                Transcript.ToolOutput(
+                    id: "toolu_2",
+                    toolName: "read_file",
+                    segments: [.text(.init(content: "B"))]
+                )
+            ),
+        ])
+
+        _ = try await model.step(
+            transcript: transcript,
+            tools: [],
+            instructions: nil,
+            generating: String.self,
+            includeSchemaInPrompt: true,
+            options: GenerationOptions()
+        )
+
+        let payload = try requestPayload(from: transport)
+        let messages = try #require(payload["messages"] as? [[String: Any]])
+        #expect(messages.count == 2)
+
+        #expect(messages[0]["role"] as? String == "assistant")
+        #expect(messages[1]["role"] as? String == "user")
+
+        let userContent = try #require(messages[1]["content"] as? [[String: Any]])
+        #expect(userContent.count == 2)
+        #expect(userContent[0]["type"] as? String == "tool_result")
+        #expect(userContent[0]["tool_use_id"] as? String == "toolu_1")
+        #expect(userContent[1]["type"] as? String == "tool_result")
+        #expect(userContent[1]["tool_use_id"] as? String == "toolu_2")
+    }
 }
 
 private func promptOnlyTranscript(_ prompt: String) -> Transcript {
@@ -233,6 +492,13 @@ private func promptOnlyTranscript(_ prompt: String) -> Transcript {
             )
         )
     ])
+}
+
+private func requestPayload(from transport: MockAnthropicV2Transport) throws -> [String: Any] {
+    let request = try #require(transport.requests.last)
+    let body = try #require(request.httpBody)
+    let payload = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+    return try #require(payload)
 }
 
 private final class MockAnthropicV2Transport {

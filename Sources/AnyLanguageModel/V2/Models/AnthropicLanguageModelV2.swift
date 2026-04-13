@@ -60,11 +60,10 @@ public struct AnthropicLanguageModelV2: LanguageModelV2 {
         }
 
         let responseSchema = type == String.self ? nil : try convertSchemaToAnthropicFormat(Content.generationSchema)
-        let stepTranscript = transcriptIncludingInstructions(transcript, instructions: instructions)
         let params = try createMessageParams(
             model: model,
-            system: nil,
-            messages: anthropicMessages(from: stepTranscript),
+            system: anthropicSystemPrompt(from: instructions),
+            messages: anthropicMessages(from: transcript),
             tools: anthropicTools.isEmpty ? nil : anthropicTools,
             responseSchema: responseSchema,
             options: options
@@ -130,21 +129,25 @@ public struct AnthropicLanguageModelV2: LanguageModelV2 {
     }
 }
 
-private func transcriptIncludingInstructions(
-    _ transcript: Transcript,
-    instructions: Transcript.Instructions?
-) -> Transcript {
+private func anthropicSystemPrompt(from instructions: Transcript.Instructions?) -> String? {
     guard let instructions else {
-        return transcript
+        return nil
     }
 
-    if let first = transcript.first, case .instructions = first {
-        return transcript
+    let parts = instructions.segments.compactMap { segment -> String? in
+        switch segment {
+        case .text(let text):
+            return text.content
+        case .structure(let structure):
+            return structure.content.jsonString
+        case .image:
+            return nil
+        }
     }
 
-    var updated = Transcript(entries: [.instructions(instructions)])
-    updated.append(contentsOf: transcript)
-    return updated
+    let content = parts.joined(separator: "\n\n")
+
+    return content.isEmpty ? nil : content
 }
 
 private func mapFinishReason(_ reason: AnthropicMessageResponse.StopReason?) -> ModelFinishReason {
@@ -324,6 +327,7 @@ private func convertToolUsesToCalls(
 private func anthropicMessages(from transcript: Transcript) -> [AnthropicMessage] {
     var messages = [AnthropicMessage]()
     var pendingAssistantContent: [AnthropicContent] = []
+    var pendingUserToolResults: [AnthropicContent] = []
 
     func flushAssistantContent() {
         guard !pendingAssistantContent.isEmpty else { return }
@@ -331,18 +335,19 @@ private func anthropicMessages(from transcript: Transcript) -> [AnthropicMessage
         pendingAssistantContent.removeAll(keepingCapacity: true)
     }
 
+    func flushUserToolResults() {
+        guard !pendingUserToolResults.isEmpty else { return }
+        messages.append(.init(role: .user, content: pendingUserToolResults))
+        pendingUserToolResults.removeAll(keepingCapacity: true)
+    }
+
     for item in transcript {
         switch item {
-        case .instructions(let instructions):
-            flushAssistantContent()
-            messages.append(
-                .init(
-                    role: .user,
-                    content: convertSegmentsToAnthropicContent(instructions.segments)
-                )
-            )
+        case .instructions:
+            continue
         case .prompt(let prompt):
             flushAssistantContent()
+            flushUserToolResults()
             messages.append(
                 .init(
                     role: .user,
@@ -365,22 +370,18 @@ private func anthropicMessages(from transcript: Transcript) -> [AnthropicMessage
             pendingAssistantContent.append(contentsOf: toolUseBlocks)
         case .toolOutput(let toolOutput):
             flushAssistantContent()
-            messages.append(
-                .init(
-                    role: .user,
-                    content: [
-                        .toolResult(
-                            AnthropicToolResult(
-                                toolUseId: toolOutput.id,
-                                content: convertSegmentsToAnthropicContent(toolOutput.segments)
-                            )
-                        )
-                    ]
+            pendingUserToolResults.append(
+                .toolResult(
+                    AnthropicToolResult(
+                        toolUseId: toolOutput.id,
+                        content: convertSegmentsToAnthropicContent(toolOutput.segments)
+                    )
                 )
             )
         }
     }
     flushAssistantContent()
+    flushUserToolResults()
 
     return messages
 }
