@@ -63,7 +63,7 @@ public struct AnthropicLanguageModelV2: LanguageModelV2 {
         let params = try createMessageParams(
             model: model,
             system: anthropicSystemPrompt(from: instructions),
-            messages: anthropicMessages(from: transcript),
+            messages: normalizeAnthropicMessages(anthropicMessages(from: transcript)),
             tools: anthropicTools.isEmpty ? nil : anthropicTools,
             responseSchema: responseSchema,
             options: options
@@ -386,6 +386,27 @@ private func anthropicMessages(from transcript: Transcript) -> [AnthropicMessage
     flushUserToolResults()
 
     return messages
+}
+
+private func normalizeAnthropicMessages(_ messages: [AnthropicMessage]) -> [AnthropicMessage] {
+    guard var current = messages.first else {
+        return []
+    }
+
+    var normalized: [AnthropicMessage] = []
+    normalized.reserveCapacity(messages.count)
+
+    for message in messages.dropFirst() {
+        if message.role == current.role {
+            current = AnthropicMessage(role: current.role, content: current.content + message.content)
+        } else {
+            normalized.append(current)
+            current = message
+        }
+    }
+
+    normalized.append(current)
+    return normalized
 }
 
 private struct AnthropicTool: Codable, Sendable {

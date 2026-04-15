@@ -377,7 +377,7 @@ struct AnthropicLanguageModelV2Tests {
         #expect(payload["system"] as? String == "You are a careful coding agent.")
 
         let messages = try #require(payload["messages"] as? [[String: Any]])
-        #expect(messages.count == 3)
+        #expect(messages.count == 2)
 
         #expect(messages[0]["role"] as? String == "assistant")
         let assistantContent = try #require(messages[0]["content"] as? [[String: Any]])
@@ -389,16 +389,12 @@ struct AnthropicLanguageModelV2Tests {
         #expect(assistantContent[1]["name"] as? String == "getWeather")
 
         #expect(messages[1]["role"] as? String == "user")
-        let toolResultContent = try #require(messages[1]["content"] as? [[String: Any]])
-        #expect(toolResultContent.count == 1)
-        #expect(toolResultContent[0]["type"] as? String == "tool_result")
-        #expect(toolResultContent[0]["tool_use_id"] as? String == "toolu_1")
-
-        #expect(messages[2]["role"] as? String == "user")
-        let promptContent = try #require(messages[2]["content"] as? [[String: Any]])
-        #expect(promptContent.count == 1)
-        #expect(promptContent[0]["type"] as? String == "text")
-        #expect(promptContent[0]["text"] as? String == "Now summarize.")
+        let userContent = try #require(messages[1]["content"] as? [[String: Any]])
+        #expect(userContent.count == 2)
+        #expect(userContent[0]["type"] as? String == "tool_result")
+        #expect(userContent[0]["tool_use_id"] as? String == "toolu_1")
+        #expect(userContent[1]["type"] as? String == "text")
+        #expect(userContent[1]["text"] as? String == "Now summarize.")
     }
 
     @Test func coalescesMultipleToolResultsIntoSingleUserMessage() async throws {
@@ -523,7 +519,7 @@ struct AnthropicLanguageModelV2Tests {
                 Transcript.ToolOutput(
                     id: "functions.read_file:0",
                     toolName: "read_file",
-                    segments: [.text(.init(content: "\"Error: no such file\""))]
+                    segments: [.text(.init(content: "Error: no such file"))]
                 )
             ),
             .toolCalls(
@@ -539,7 +535,7 @@ struct AnthropicLanguageModelV2Tests {
                 Transcript.ToolOutput(
                     id: "functions.bash:1",
                     toolName: "bash",
-                    segments: [.text(.init(content: "\"total 64\""))]
+                    segments: [.text(.init(content: "total 64"))]
                 )
             ),
         ])
@@ -574,6 +570,10 @@ struct AnthropicLanguageModelV2Tests {
         #expect(secondUserContent.count == 1)
         #expect(secondUserContent[0]["type"] as? String == "tool_result")
         #expect(secondUserContent[0]["tool_use_id"] as? String == "functions.read_file:0")
+        let firstToolResultBlocks = try #require(secondUserContent[0]["content"] as? [[String: Any]])
+        #expect(firstToolResultBlocks.count == 1)
+        #expect(firstToolResultBlocks[0]["type"] as? String == "text")
+        #expect(firstToolResultBlocks[0]["text"] as? String == "Error: no such file")
 
         #expect(messages[3]["role"] as? String == "assistant")
         let secondAssistantContent = try #require(messages[3]["content"] as? [[String: Any]])
@@ -586,6 +586,83 @@ struct AnthropicLanguageModelV2Tests {
         #expect(finalUserContent.count == 1)
         #expect(finalUserContent[0]["type"] as? String == "tool_result")
         #expect(finalUserContent[0]["tool_use_id"] as? String == "functions.bash:1")
+        let finalToolResultBlocks = try #require(finalUserContent[0]["content"] as? [[String: Any]])
+        #expect(finalToolResultBlocks.count == 1)
+        #expect(finalToolResultBlocks[0]["type"] as? String == "text")
+        #expect(finalToolResultBlocks[0]["text"] as? String == "total 64")
+    }
+
+    @Test func preservesMultilinePlainTextToolResultWithoutJSONStringWrapping() async throws {
+        let transport = MockAnthropicV2Transport()
+        transport.enqueueJSON(
+            """
+            {
+              "id": "msg_4",
+              "type": "message",
+              "role": "assistant",
+              "content": [{ "type": "text", "text": "done" }],
+              "model": "claude-test",
+              "stop_reason": "end_turn"
+            }
+            """
+        )
+
+        let model = AnthropicLanguageModelV2(
+            apiKey: "test-api-key",
+            model: "claude-test",
+            session: transport.session
+        )
+
+        let transcript = Transcript(entries: [
+            .toolOutput(
+                Transcript.ToolOutput(
+                    id: "toolu_plan",
+                    toolName: "todo",
+                    segments: [
+                        .text(
+                            .init(
+                                content: """
+                                [>] Step one
+                                [ ] Step two
+
+                                (0/2 completed)
+                                """
+                            )
+                        )
+                    ]
+                )
+            )
+        ])
+
+        _ = try await model.step(
+            transcript: transcript,
+            tools: [],
+            instructions: nil,
+            generating: String.self,
+            includeSchemaInPrompt: true,
+            options: GenerationOptions()
+        )
+
+        let payload = try requestPayload(from: transport)
+        let messages = try #require(payload["messages"] as? [[String: Any]])
+        #expect(messages.count == 1)
+        #expect(messages[0]["role"] as? String == "user")
+
+        let userContent = try #require(messages[0]["content"] as? [[String: Any]])
+        #expect(userContent.count == 1)
+        #expect(userContent[0]["type"] as? String == "tool_result")
+        let toolResultBlocks = try #require(userContent[0]["content"] as? [[String: Any]])
+        #expect(toolResultBlocks.count == 1)
+        #expect(toolResultBlocks[0]["type"] as? String == "text")
+        #expect(
+            toolResultBlocks[0]["text"] as? String ==
+                """
+                [>] Step one
+                [ ] Step two
+
+                (0/2 completed)
+                """
+        )
     }
 }
 
