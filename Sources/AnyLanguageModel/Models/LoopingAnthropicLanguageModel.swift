@@ -495,60 +495,6 @@ public struct LoopingAnthropicLanguageModel: LanguageModel {
     }
 }
 
-private func debugLogAnthropicRound(
-    round: Int,
-    body: Data,
-    transcript: Transcript,
-    expectingStructuredResponse: Bool
-) {
-    guard DebugLogging.isAnthropicIODebugEnabled else { return }
-
-    let messageCount = Array(transcript).count
-    DebugLogging.log(
-        "Anthropic round \(round): sending request with \(messageCount) transcript entries; structured response: \(expectingStructuredResponse)"
-    )
-    DebugLogging.writeArtifact(
-        prefix: "anthropic-round-\(round)-request",
-        fileExtension: "json",
-        data: body
-    )
-}
-
-private func debugLogAnthropicResponseSummary(
-    round: Int,
-    stopReason: AnthropicMessageResponse.StopReason?,
-    content: [AnthropicContent]
-) {
-    guard DebugLogging.isAnthropicIODebugEnabled else { return }
-
-    let blockTypes = content.map { block -> String in
-        switch block {
-        case .text(let text):
-            return "text:(\(text.text))"
-        case .thinking:
-            return "thinking"
-        case .image:
-            return "image"
-        case .toolUse:
-            return "tool_use"
-        case .toolResult:
-            return "tool_result"
-        }
-    }
-
-    DebugLogging.log(
-        "Anthropic round \(round): received stop_reason=\(stopReason?.rawValue ?? "nil"), content blocks=\(blockTypes)"
-    )
-    DebugLogging.writeArtifact(
-        prefix: "anthropic-round-\(round)-response-summary",
-        fileExtension: "txt",
-        string: """
-        stop_reason: \(stopReason?.rawValue ?? "nil")
-        content_blocks: \(blockTypes.joined(separator: ","))
-        """
-    )
-}
-
 // MARK: - Conversions
 
 private func createMessageParams(
@@ -689,23 +635,11 @@ private func runSingleRound(
     )
 
     let body = try JSONEncoder().encode(params)
-    debugLogAnthropicRound(
-        round: round,
-        body: body,
-        transcript: transcript,
-        expectingStructuredResponse: expectingStructuredResponse
-    )
-
     let message: AnthropicMessageResponse = try await httpSession.fetch(
         .post,
         url: url,
         headers: headers,
         body: body
-    )
-    debugLogAnthropicResponseSummary(
-        round: round,
-        stopReason: message.stopReason,
-        content: message.content
     )
 
     let assistantContent = extractAssistantResponse(from: message.content)
