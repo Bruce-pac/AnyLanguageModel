@@ -22,6 +22,16 @@ public struct Transcript: Sendable, Equatable, Codable {
         entries.append(contentsOf: newEntries)
     }
 
+    /// Returns a stable snapshot of the transcript entries.
+    public func snapshotEntries() -> [Entry] {
+        entries
+    }
+
+    /// Replaces the transcript entries with a controlled new sequence.
+    public mutating func replaceEntries<S>(with newEntries: S) where S: Sequence, S.Element == Entry {
+        entries = Array(newEntries)
+    }
+
     /// An entry in a transcript.
     public enum Entry: Sendable, Identifiable, Equatable, Codable {
         /// Instructions, typically provided by you, the developer.
